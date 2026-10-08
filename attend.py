@@ -96,10 +96,12 @@ class API:
                         json={"email": email, "password": password})
         r.raise_for_status()
         data = r.json()
-        self.token = data.get("token") or (data.get("data") or {}).get("token")
+        nested = data.get("data") or {}
+        self.token = data.get("token") or nested.get("token")
         if not self.token:
             raise SystemExit(f"Login OK but no token in response: {data}")
-        self.employee_id = (data.get("user") or {}).get("employee_id")
+        user = data.get("user") or nested.get("user") or {}
+        self.employee_id = user.get("employee_id")
         self.s.headers["Authorization"] = f"Bearer {self.token}"
         return data
 
