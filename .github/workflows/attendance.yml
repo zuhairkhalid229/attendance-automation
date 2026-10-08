@@ -1,0 +1,67 @@
+name: Attendance
+
+# Times below are UTC (GitHub cron is always UTC). Your local time is PKT = UTC+5.
+#   check-in  trigger 17:55 UTC = 22:55 PKT  -> window 23:00-00:15 PKT (set in env)
+#   check-out trigger 02:55 UTC = 07:55 PKT  -> window 08:00-09:00 PKT
+# The job sets TZ=Asia/Karachi so the script's windows are interpreted in PKT,
+# then sleeps a random amount so the real action lands inside the window.
+#
+# NOTE ON COST: a hosted runner bills for the whole job, including the random
+# wait (up to ~75 min each). In a PRIVATE repo that can exceed the 2000 free
+# minutes/month. Use a PUBLIC repo (unlimited) or a self-hosted runner to avoid
+# charges, or shorten the window in the secrets below.
+
+on:
+  schedule:
+    - cron: "55 17 * * *"   # check-in
+    - cron: "55 2 * * *"    # check-out
+  workflow_dispatch:         # manual run button
+    inputs:
+      action:
+        description: "checkin | checkout | status"
+        required: true
+        default: "status"
+      no_sleep:
+        description: "skip the random wait (for testing)"
+        required: false
+        default: "true"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TZ: Asia/Karachi
+      ATT_EMAIL: ${{ secrets.ATT_EMAIL }}
+      ATT_PASSWORD: ${{ secrets.ATT_PASSWORD }}
+      CHECKIN_START: "23:00"
+      CHECKIN_END: "00:15"
+      CHECKOUT_START: "08:00"
+      CHECKOUT_END: "09:00"
+      SKIP_WEEKENDS: "false"
+      REPORT_TEXT: "dinenova"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      # Decide which command to run: scheduled runs map cron -> checkin/checkout;
+      # manual runs use the chosen input.
+      - name: Choose action
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "cmd=${{ github.event.inputs.action }}" >> "$GITHUB_OUTPUT"
+            echo "NO_SLEEP=${{ github.event.inputs.no_sleep }}" >> "$GITHUB_ENV"
+          elif [ "${{ github.event.schedule }}" = "55 17 * * *" ]; then
+            echo "cmd=checkin" >> "$GITHUB_OUTPUT"
+          else
+            echo "cmd=checkout" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run
+        run: python attend.py ${{ steps.pick.outputs.cmd }}

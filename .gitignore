@@ -1,0 +1,12 @@
+# secrets / credentials
+.env
+
+# HAR capture contains a live session token
+*.har
+
+# security-probe artifacts — do not publish
+probe_authz.py
+BACKFILL_FINDINGS.md
+
+__pycache__/
+*.pyc
