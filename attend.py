@@ -135,24 +135,19 @@ def is_weekend():
     return dt.date.today().weekday() >= 5  # 5=Sat, 6=Sun
 
 
-def random_delay(start_hhmm, end_hhmm):
-    """Sleep until a random moment inside [start, end] of today, if we're before it."""
-    if not start_hhmm or not end_hhmm:
-        return
+def jitter_sleep():
+    """Sleep a random, BOUNDED amount so the action time varies a bit day to day.
+
+    The scheduler (cron) already controls *when* the job starts; this only adds a
+    small spread on top. It can never sleep longer than SPREAD_MINUTES, so there
+    is no cross-midnight / timezone math to get wrong and no multi-hour stalls.
+    """
     if cfg("NO_SLEEP", "").lower() in ("1", "true", "yes"):
         print("NO_SLEEP set -> acting immediately"); return
-    now = dt.datetime.now()
-    sh, sm = map(int, start_hhmm.split(":"))
-    eh, em = map(int, end_hhmm.split(":"))
-    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
-    if end < start:                      # window crosses midnight
-        end += dt.timedelta(days=1)
-    target = start + dt.timedelta(seconds=random.randint(0, int((end - start).total_seconds())))
-    wait = (target - dt.datetime.now()).total_seconds()
-    if wait > 0:
-        print(f"[{now:%H:%M}] sleeping {int(wait//60)} min -> acting at {target:%H:%M}")
-        time.sleep(wait)
+    spread = float(cfg("SPREAD_MINUTES", "20"))
+    secs = random.randint(0, int(spread * 60))
+    print(f"jitter: sleeping {secs // 60}m {secs % 60}s (max {spread:.0f}m)")
+    time.sleep(secs)
 
 
 def git_report(repo, since_hours=24):
@@ -191,8 +186,10 @@ def extract_id(obj):
 def do_checkin():
     if cfg("SKIP_WEEKENDS", "").lower() in ("1", "true", "yes") and is_weekend():
         print("weekend -> skip"); return
-    random_delay(cfg("CHECKIN_START"), cfg("CHECKIN_END"))
+    jitter_sleep()
     api = API(); api.login()
+    # timer_sync is idempotent: if already checked in today it just reports the
+    # running session, so a redundant/duplicate trigger is a harmless no-op.
     res = api.timer_sync()
     data = res.get("data") or {}
     # The server refuses check-in while a previous day's report is pending.
@@ -208,7 +205,7 @@ def do_checkin():
 def do_checkout():
     if cfg("SKIP_WEEKENDS", "").lower() in ("1", "true", "yes") and is_weekend():
         print("weekend -> skip"); return
-    random_delay(cfg("CHECKOUT_START"), cfg("CHECKOUT_END"))
+    jitter_sleep()
     api = API(); api.login()
     status = (api.today_status().get("data") or {})
     att_id = extract_id(status)
@@ -218,8 +215,14 @@ def do_checkout():
             print("report submitted for id", att_id)
         except Exception as e:
             print("report failed (non-fatal):", e)
-    res = api.logout_checkout()
-    print("check-out:", res.get("message") or json.dumps(res)[:200])
+    # If there's no open session (already checked out, or a redundant trigger),
+    # the server returns 4xx -> treat that as a no-op, not a failure.
+    try:
+        res = api.logout_checkout()
+        print("check-out:", res.get("message") or json.dumps(res)[:200])
+    except requests.HTTPError as e:
+        body = e.response.text[:200] if e.response is not None else ""
+        print("check-out: nothing to close / already out (non-fatal):", body)
 
 
 def do_status():

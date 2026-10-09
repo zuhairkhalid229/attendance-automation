@@ -1,43 +1,40 @@
 name: Attendance
 
-# Times below are UTC (GitHub cron is always UTC). Your local time is PKT = UTC+5.
-#   check-in  trigger 17:55 UTC = 22:55 PKT  -> window 23:00-00:15 PKT (set in env)
-#   check-out trigger 02:55 UTC = 07:55 PKT  -> window 08:00-09:00 PKT
-# The job sets TZ=Asia/Karachi so the script's windows are interpreted in PKT,
-# then sleeps a random amount so the real action lands inside the window.
-#
-# NOTE ON COST: a hosted runner bills for the whole job, including the random
-# wait (up to ~75 min each). In a PRIVATE repo that can exceed the 2000 free
-# minutes/month. Use a PUBLIC repo (unlimited) or a self-hosted runner to avoid
-# charges, or shorten the window in the secrets below.
+# GitHub cron is ALWAYS UTC. Local time is PKT = UTC+5.
+# Check-in window ~23:00-23:40 PKT  -> 18:00 & 18:30 UTC
+# Check-out window ~08:00-08:40 PKT -> 03:00 & 03:30 UTC
+# Two triggers per action give redundancy: if GitHub drops/delays one, the next
+# catches it. The script is idempotent (checking in when already in, or out when
+# already out, is a harmless no-op), so the extra trigger never double-logs.
+# On top of the cron time, the job adds a small random jitter (SPREAD_MINUTES)
+# so the exact minute varies day to day. No long sleeps -> short, cheap jobs.
 
 on:
   schedule:
-    - cron: "55 17 * * *"   # check-in
-    - cron: "55 2 * * *"    # check-out
-  workflow_dispatch:         # manual run button
+    - cron: "0 18 * * *"    # check-in  (23:00 PKT)
+    - cron: "30 18 * * *"   # check-in  (23:30 PKT) redundancy
+    - cron: "0 3 * * *"     # check-out (08:00 PKT)
+    - cron: "30 3 * * *"    # check-out (08:30 PKT) redundancy
+  workflow_dispatch:
     inputs:
       action:
         description: "checkin | checkout | status"
         required: true
         default: "status"
       no_sleep:
-        description: "skip the random wait (for testing)"
+        description: "skip the random jitter (for testing)"
         required: false
         default: "true"
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30          # jitter is bounded well under this
     env:
       TZ: Asia/Karachi
       ATT_EMAIL: ${{ secrets.ATT_EMAIL }}
       ATT_PASSWORD: ${{ secrets.ATT_PASSWORD }}
-      CHECKIN_START: "23:00"
-      CHECKIN_END: "00:15"
-      CHECKOUT_START: "08:00"
-      CHECKOUT_END: "09:00"
+      SPREAD_MINUTES: "20"       # action lands within 0-20 min of the cron time
       SKIP_WEEKENDS: "false"
       REPORT_TEXT: "dinenova"
     steps:
@@ -49,18 +46,18 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Decide which command to run: scheduled runs map cron -> checkin/checkout;
-      # manual runs use the chosen input.
       - name: Choose action
         id: pick
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "cmd=${{ github.event.inputs.action }}" >> "$GITHUB_OUTPUT"
             echo "NO_SLEEP=${{ github.event.inputs.no_sleep }}" >> "$GITHUB_ENV"
-          elif [ "${{ github.event.schedule }}" = "55 17 * * *" ]; then
-            echo "cmd=checkin" >> "$GITHUB_OUTPUT"
           else
-            echo "cmd=checkout" >> "$GITHUB_OUTPUT"
+            case "${{ github.event.schedule }}" in
+              "0 18 * * *"|"30 18 * * *") echo "cmd=checkin"  >> "$GITHUB_OUTPUT" ;;
+              "0 3 * * *"|"30 3 * * *")   echo "cmd=checkout" >> "$GITHUB_OUTPUT" ;;
+              *)                          echo "cmd=status"   >> "$GITHUB_OUTPUT" ;;
+            esac
           fi
 
       - name: Run
